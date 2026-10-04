@@ -31,34 +31,24 @@ function getClientIp(req: Request): string {
 function checkIpBlocked(clientIp: string): { blocked: boolean; remaining: number } {
   const record = ipAttempts.get(clientIp);
   if (!record) return { blocked: false, remaining: MAX_ATTEMPTS };
-
   const now = Date.now();
-  if (record.blockedUntil > now) {
-    return { blocked: true, remaining: 0 };
-  }
-
+  if (record.blockedUntil > now) return { blocked: true, remaining: 0 };
   if (record.blockedUntil > 0 && record.blockedUntil <= now) {
     ipAttempts.delete(clientIp);
     return { blocked: false, remaining: MAX_ATTEMPTS };
   }
-
   return { blocked: false, remaining: MAX_ATTEMPTS - record.count };
 }
 
 function recordFailedAttempt(clientIp: string): number {
   const record = ipAttempts.get(clientIp) || { count: 0, blockedUntil: 0 };
   const now = Date.now();
-
   if (record.blockedUntil > now) return 0;
-
   record.count += 1;
   const remaining = MAX_ATTEMPTS - record.count;
-
   if (record.count >= MAX_ATTEMPTS) {
     record.blockedUntil = now + COOLDOWN_MS;
-    console.log(`[BLOCKED] IP ${clientIp} blocked for 30 minutes`);
   }
-
   ipAttempts.set(clientIp, record);
   return Math.max(0, remaining);
 }
@@ -83,12 +73,6 @@ app.use(limiter);
 
 app.use(express.static(path.join(process.cwd(), 'public')));
 
-app.use((req: Request, _res: Response, next: NextFunction) => {
-  const clientIp = getClientIp(req);
-  console.log(`[REQ] ${req.method} ${req.path} → ${clientIp} | ${_res.statusCode}`);
-  next();
-});
-
 app.get('/', (_req: Request, res: Response) => {
   res.send('Hello, world!');
 });
@@ -96,23 +80,19 @@ app.get('/', (_req: Request, res: Response) => {
 app.all('/player/login/dashboard', async (req: Request, res: Response) => {
   const body = req.body;
   let clientData = '';
-
   if (body && typeof body === 'object' && Object.keys(body).length > 0) {
     clientData = Object.keys(body)[0];
   }
-
   const encodedClientData = Buffer.from(clientData).toString('base64');
   const templatePath = path.join(process.cwd(), 'template', 'dashboard.html');
   const templateContent = fs.readFileSync(templatePath, 'utf-8');
   const htmlContent = templateContent.replace('{{ data }}', encodedClientData);
-
   res.setHeader('Content-Type', 'text/html');
   res.send(htmlContent);
 });
 
 app.all('/player/growid/login/validate', async (req: Request, res: Response) => {
   const clientIp = getClientIp(req);
-
   const { blocked } = checkIpBlocked(clientIp);
   if (blocked) {
     const errorMessage = 'Login attempts exhausted from your IP, Please try again later after 30 mins';
@@ -125,23 +105,17 @@ app.all('/player/growid/login/validate', async (req: Request, res: Response) => 
     res.send(htmlContent);
     return;
   }
-
   try {
     const formData = req.body as Record<string, string>;
-    const email = formData.email;
-    if (email) return;
-
+    if (formData.email) return;
     const _token = formData._token;
     const growId = formData.growId;
     const password = formData.password;
-
     if (!growId || !password) {
       res.status(200).json({ status: 'error', message: 'Missing growId or password' });
       return;
     }
-
     const rows = await db`SELECT * FROM peer WHERE growid = ${growId} LIMIT 1`;
-
     if (rows.length === 0) {
       const attemptsLeft = recordFailedAttempt(clientIp);
       const clientData = Buffer.from(`${growId}`).toString('base64');
@@ -155,7 +129,6 @@ app.all('/player/growid/login/validate', async (req: Request, res: Response) => 
       res.send(htmlContent);
       return;
     }
-
     const user = rows[0];
     if (user.password !== password) {
       const attemptsLeft = recordFailedAttempt(clientIp);
@@ -170,13 +143,10 @@ app.all('/player/growid/login/validate', async (req: Request, res: Response) => 
       res.send(htmlContent);
       return;
     }
-
     resetAttempts(clientIp);
-
     const token = Buffer.from(
       `_token=${_token}&growId=${growId}&password=${password}&reg=0`,
     ).toString('base64');
-
     res.send(JSON.stringify({
       status: 'success',
       message: 'Account Validated.',
@@ -185,7 +155,6 @@ app.all('/player/growid/login/validate', async (req: Request, res: Response) => 
       accountType: 'growtopia',
     }));
   } catch (error) {
-    console.log(`[ERROR]: ${error}`);
     res.status(500).json({ status: 'error', message: 'Internal Server Error' });
   }
 });
@@ -198,67 +167,35 @@ app.all('/player/growid/validate/checktoken', async (req: Request, res: Response
   try {
     let refreshToken: string | undefined;
     let clientData: string | undefined;
-    let source = 'empty';
     const contentType = req.headers['content-type'] || '';
-
     if (typeof req.body === 'object' && req.body !== null) {
       const formData = req.body as Record<string, string>;
       if ('refreshToken' in formData || 'clientData' in formData) {
         refreshToken = formData.refreshToken;
         clientData = formData.clientData;
-        source = contentType.includes('application/json') ? 'json/object' : 'form-urlencoded';
       } else if (Object.keys(formData).length === 1) {
         const rawPayload = Object.keys(formData)[0];
         const params = new URLSearchParams(rawPayload);
         refreshToken = params.get('refreshToken') || undefined;
         clientData = params.get('clientData') || undefined;
-        if (refreshToken || clientData) source = 'single-key-form-payload';
-      }
-    } else if (typeof req.body === 'string' && req.body.length > 0) {
-      const params = new URLSearchParams(req.body);
-      refreshToken = params.get('refreshToken') || undefined;
-      clientData = params.get('clientData') || undefined;
-      source = 'string/body-parser';
-    }
-
-    if ((!refreshToken || !clientData) && req.readable && !req.readableEnded) {
-      const rawBody = await new Promise<string>((resolve, reject) => {
-        let rawPayload = '';
-        req.on('data', (chunk: Buffer | string) => { rawPayload += chunk.toString(); });
-        req.on('end', () => resolve(rawPayload));
-        req.on('error', reject);
-      });
-      if (rawBody) {
-        const params = new URLSearchParams(rawBody);
-        refreshToken = params.get('refreshToken') || refreshToken;
-        clientData = params.get('clientData') || clientData;
-        if (refreshToken || clientData) source = 'raw-stream';
       }
     }
-
-    console.log(`[CHECKTOKEN] Parsed as ${source}`);
-
     if (!refreshToken || !clientData) {
-      console.log(`[ERROR]: Missing refreshToken or clientData`);
       res.status(200).json({ status: 'error', message: 'Missing refreshToken or clientData' });
       return;
     }
-
     let decodedRefreshToken = Buffer.from(refreshToken, 'base64').toString('utf-8');
-
     if (decodedRefreshToken.includes('&reg=0')) {
       decodedRefreshToken = decodedRefreshToken.replace('&reg=0', '');
     } else if (decodedRefreshToken.includes('&reg=1')) {
       decodedRefreshToken = decodedRefreshToken.replace('&reg=1', '');
     }
-
     const token = Buffer.from(
       decodedRefreshToken.replace(
         /(_token=)[^&]*/,
         `$1${Buffer.from(clientData).toString('base64')}`,
       ),
     ).toString('base64');
-
     res.send(JSON.stringify({
       status: 'success',
       message: 'Account Validated.',
@@ -268,7 +205,6 @@ app.all('/player/growid/validate/checktoken', async (req: Request, res: Response
       accountAge: 2,
     }));
   } catch (error) {
-    console.log(`[ERROR]: ${error}`);
     res.status(200).json({ status: 'error', message: 'Internal Server Error' });
   }
 });
