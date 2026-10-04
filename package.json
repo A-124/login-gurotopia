@@ -2,13 +2,8 @@
   "name": "growtopialogin-backend",
   "type": "module",
   "version": "1.0.50",
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "bun run --watch index.ts",
-    "build": "bun build index.ts --target bun --outdir dist"
+    "dev": "bun run --watch index.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
